@@ -17,6 +17,8 @@ import android.text.style.ForegroundColorSpan;
 import android.os.*;
 import android.provider.Settings;
 import android.text.InputType;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.view.*;
 import android.widget.*;
 import org.json.JSONObject;
@@ -25,11 +27,17 @@ import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Locale;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 public final class MainActivity extends Activity {
     private final int INK = Color.rgb(40, 41, 36), MUTED = Color.rgb(107, 108, 100), ACCENT = Color.rgb(187, 73, 43);
     private final int PAPER = Color.rgb(247, 245, 241), SOFT = Color.rgb(243, 240, 234), LINE = Color.rgb(230, 225, 217);
-    private Fold loginFold, alternativeFold, routeFold;
+    private Fold loginFold, alternativeFold, routeFold, accessFold;
+    private CheckBox useStationAccess;
+    private final EditText[] accessStations = new EditText[3], accessMinutes = new EditText[3];
+    private EditText extraTravel, boardingBuffer;
+    private boolean restoringAccess;
     private boolean wasActive;
     private TextView statusPill, footerHint;
     private LinearLayout statusCard;
@@ -127,6 +135,24 @@ public final class MainActivity extends Activity {
         add(text("여러 명은 함께 예약하며, 인접 좌석은 보장되지 않아요.", 11, MUTED), 8);
         recentNote = text("검색을 시작하면 이 조건을 기억해요.", 11, MUTED); add(recentNote, 12);
 
+        accessFold = fold(page, "다른 출발역도 찾아보기", "역까지 이동할 수 있는 시간으로 대안을 찾아요.", false); content = accessFold.body;
+        useStationAccess = new CheckBox(this); useStationAccess.setText("역별 이동 시간으로 출발역 대안 찾기"); styleCheck(useStationAccess); add(useStationAccess, 10); inputs.add(useStationAccess);
+        add(text("같은 출발지에서 각 역까지 걸리는 시간을 입력하세요. 현재 출발역의 시간도 등록해야 합니다. 기준역보다 추가 이동을 허용한 범위 안의 역만 검색합니다.", 12, MUTED), 8);
+        LinearLayout accessBody = content;
+        for (int i = 0; i < 3; i++) {
+            LinearLayout row = horizontal(), stationColumn = vertical(), minuteColumn = vertical();
+            stationColumn.setPadding(dp(12), dp(10), dp(12), 0); stationColumn.setBackground(background(SOFT, 14));
+            row.addView(stationColumn, new LinearLayout.LayoutParams(0, -2, 1));
+            Space gap = new Space(this); row.addView(gap, new LinearLayout.LayoutParams(dp(10), 1));
+            row.addView(minuteColumn, new LinearLayout.LayoutParams(dp(112), -2)); add(row, 12);
+            content = stationColumn; accessStations[i] = station("역 이름", "");
+            content = minuteColumn; accessMinutes[i] = minuteField("이동 시간 (분)", ""); content = accessBody;
+        }
+        extraTravel = minuteField("기준역보다 추가 이동 허용 (분)", "30");
+        boardingBuffer = minuteField("역 도착 후 승차 여유 (분)", "15");
+        add(text("현재 입력 조건과 직접 추가한 시간 대안을 먼저 포함하고, 남는 자리에 이동 시간이 짧은 역을 추가합니다. 전체 최대 3개이며, 확인 창에 나온 역만 예약합니다. 위치·교통 변화는 자동 반영되지 않습니다.", 12, MUTED), 10);
+        control("역 이동 시간 설정 초기화", () -> resetAccessSettings());
+
         content = page; alternativeFold = fold(page, "다른 시간도 괜찮다면", "현재 조건에 대안을 더해 최대 3개를 찾아요.", false); content = alternativeFold.body;
         add(text("하나가 예약되면 모든 조건의 검색을 종료합니다.", 12, MUTED), 8);
         control("+  지금 조건을 대안으로 추가", () -> {
@@ -144,7 +170,15 @@ public final class MainActivity extends Activity {
         username = field("회원번호 · 이메일 · 휴대폰 번호", InputType.TYPE_CLASS_TEXT); username.setSaveEnabled(false);
         password = field("코레일 비밀번호", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD); password.setSaveEnabled(false);
         setupCredentialMemory(); loginFold.expand(username.getText().length() == 0 || password.getText().length() == 0);
-        restoreConditions(); renderAlternatives();
+        restoreConditions(); renderAlternatives(); restoreAccessSettings();
+        for (int i = 0; i < accessStations.length; i++) {
+            final EditText minutes = accessMinutes[i];
+            accessStations[i].addTextChangedListener(new TextWatcher() {
+                public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
+                public void onTextChanged(CharSequence s, int start, int before, int count) { }
+                public void afterTextChanged(Editable value) { if (!restoringAccess) minutes.setText(""); }
+            });
+        }
 
         content = page; Fold settings = fold(page, "알림과 앱 설정", "한 번 설정하고, 알림으로 확인하세요.", false); content = settings.body;
         settingControl("예약 결과 알림 설정", () -> startActivity(new Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
@@ -180,13 +214,21 @@ public final class MainActivity extends Activity {
         if (SearchAlerts.paymentPending(this)) { toast("이전 예약의 결제·취소를 확인한 뒤 재알림을 꺼주세요."); return; }
         if (username.getText().toString().trim().isEmpty() || password.getText().length() == 0) { loginFold.expand(true); (username.getText().length() == 0 ? username : password).requestFocus(); toast("로그인 정보를 입력해주세요."); return; }
         JSONArray conditions;
+        JSONObject accessSettings;
         StringBuilder summary = new StringBuilder();
         try {
             conditions = selectedConditions();
+            accessSettings = useStationAccess.isChecked() ? accessSettings(readAccessPolicy()) : null;
+            StationAccessPolicy access = useStationAccess.isChecked() ? readAccessPolicy() : null;
             for (int i = 0; i < conditions.length(); i++) {
                 JSONObject condition = conditions.getJSONObject(i); checkCondition(condition);
                 summary.append(i + 1).append(". ").append(describeCondition(condition)).append("\n\n");
+                if (access != null) summary.append("역까지 ").append(access.minutesFor(condition.getString("departure"))).append("분 + 승차 여유 ")
+                    .append(access.boardingMinutes).append("분\n지금 기준 ").append(earliestReady(condition, access).format(DateTimeFormatter.ofPattern("M/d HH:mm"))).append(" 이후 출발 열차\n\n");
             }
+        } catch (IllegalArgumentException error) {
+            if (useStationAccess.isChecked()) accessFold.expand(true);
+            toast(error.getMessage() == null ? "역·날짜·시간을 확인하고 지난 조건은 수정하거나 삭제해주세요." : error.getMessage()); return;
         } catch (Exception error) { toast("현재 조건과 추가한 대안의 역·날짜·시간을 확인해주세요. 지난 조건은 수정하거나 삭제해주세요."); return; }
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 10);
@@ -200,15 +242,17 @@ public final class MainActivity extends Activity {
         }
         new AlertDialog.Builder(this).setTitle("이 조건으로 자동 예약할까요?")
             .setMessage(summary + "위 조건 중 먼저 예약되는 1건만 확보하고 모든 검색을 종료합니다. 결제는 직접 해야 합니다. 개인용 이용에 한하며, 조회 간격을 줄일 수 없습니다.")
-            .setNegativeButton("돌아가기", null).setPositiveButton("확인하고 검색 시작", (dialog, which) -> begin()).show();
+            .setNegativeButton("돌아가기", null).setPositiveButton("확인하고 검색 시작", (dialog, which) -> begin(conditions, accessSettings)).show();
     }
 
-    private void begin() {
+    private void begin(JSONArray confirmedConditions, JSONObject confirmedAccess) {
         try {
             JSONObject config = new JSONObject().put("username", username.getText().toString().trim()).put("password", password.getText().toString())
-                .put("conditions", selectedConditions()).put("confirmed", true);
+                .put("conditions", confirmedConditions).put("confirmed", true);
+            if (confirmedAccess != null) config.put("station_access", confirmedAccess);
             startForegroundService(new Intent(this, SearchService.class).putExtra("config", config.toString()));
-            getSharedPreferences("recent_search", 0).edit().putString("conditions", selectedConditions().toString()).apply();
+            getSharedPreferences("recent_search", 0).edit().putString("conditions", enteredConditions().toString()).putString("active_summary", planSummary(confirmedConditions)).apply();
+            getSharedPreferences("station_access", 0).edit().putString("settings", accessPreferences().toString()).apply();
             recentNote.setText("이번 검색 조건을 기억했어요. 다음 실행 때 불러옵니다.");
             try {
                 credentialStore.save(username.getText().toString().trim(), password.getText().toString(), rememberId.isChecked(), rememberPassword.isChecked());
@@ -290,11 +334,11 @@ public final class MainActivity extends Activity {
         };
         boolean needsAttention = kind.equals("error") || kind.equals("uncertain");
         boolean pending = SearchAlerts.paymentPending(this);
-        if (active && !wasActive) { routeFold.expand(false); loginFold.expand(false); alternativeFold.expand(false); }
+        if (active && !wasActive) { routeFold.expand(false); loginFold.expand(false); alternativeFold.expand(false); accessFold.expand(false); }
         if (!active && wasActive) routeFold.expand(true);
         wasActive = active;
         try {
-            String caption = routeFold.body.getVisibility() == View.VISIBLE ? "출발·도착과 날짜, 시간을 정해주세요."
+            String caption = active ? getSharedPreferences("recent_search", 0).getString("active_summary", "확인한 조건으로 검색 중입니다.") : routeFold.body.getVisibility() == View.VISIBLE ? "출발·도착과 날짜, 시간을 정해주세요."
                 : describeCondition(currentCondition()) + "\n총 " + selectedConditions().length() + "개 조건";
             if (!routeFold.description.getText().toString().equals(caption)) routeFold.description.setText(caption);
         } catch (Exception ignored) { }
@@ -322,10 +366,107 @@ public final class MainActivity extends Activity {
             .put("option", options[seat.getSelectedItemPosition()]);
     }
 
-    private JSONArray selectedConditions() throws Exception {
+    private JSONArray enteredConditions() throws Exception {
         JSONArray result = new JSONArray().put(currentCondition());
         for (JSONObject other : alternatives) if (!sameCondition(result.getJSONObject(0), other)) result.put(other);
         return result;
+    }
+
+    private JSONArray selectedConditions() throws Exception {
+        JSONArray entered = enteredConditions();
+        if (!useStationAccess.isChecked()) return entered;
+        StationAccessPolicy policy = readAccessPolicy();
+        JSONArray candidates = new JSONArray(entered.toString());
+        JSONObject primary = entered.getJSONObject(0);
+        for (String station : policy.eligibleStations()) {
+            if (station.equals(primary.getString("arrival"))) continue;
+            JSONObject candidate = new JSONObject(primary.toString()).put("departure", station);
+            boolean duplicate = false;
+            for (int i = 0; i < candidates.length(); i++) if (sameCondition(candidate, candidates.getJSONObject(i))) duplicate = true;
+            if (!duplicate) candidates.put(candidate);
+        }
+        JSONArray result = new JSONArray();
+        for (int i = 0; i < candidates.length(); i++) {
+            JSONObject condition = candidates.getJSONObject(i); checkCondition(condition);
+            if (!policy.eligible(condition.getString("departure"))) continue;
+            ZonedDateTime end = ZonedDateTime.of(LocalDate.parse(condition.getString("date"), DateTimeFormatter.BASIC_ISO_DATE),
+                LocalTime.parse(condition.getString("end"), DateTimeFormatter.ofPattern("HHmm")), ZoneId.of("Asia/Seoul"));
+            if (earliestReady(condition, policy).isBefore(end) && result.length() < 3) result.put(condition);
+        }
+        if (result.length() == 0) throw new IllegalArgumentException("지금 출발해도 이동·승차 여유를 확보할 수 있는 조건이 없어요. 시간을 넓혀주세요.");
+        return result;
+    }
+
+    private ZonedDateTime earliestReady(JSONObject condition, StationAccessPolicy policy) throws Exception {
+        ZonedDateTime startTime = ZonedDateTime.of(LocalDate.parse(condition.getString("date"), DateTimeFormatter.BASIC_ISO_DATE),
+            LocalTime.parse(condition.getString("start"), DateTimeFormatter.ofPattern("HHmm")), ZoneId.of("Asia/Seoul"));
+        ZonedDateTime ready = ZonedDateTime.now(ZoneId.of("Asia/Seoul")).plusMinutes(policy.minutesFor(condition.getString("departure")) + policy.boardingMinutes).plusSeconds(5);
+        return startTime.isAfter(ready) ? startTime : ready;
+    }
+
+    private StationAccessPolicy readAccessPolicy() {
+        LinkedHashMap<String, Integer> stations = new LinkedHashMap<>();
+        for (int i = 0; i < accessStations.length; i++) {
+            String station = accessStations[i].getText().toString().trim(), minutes = accessMinutes[i].getText().toString().trim();
+            if (station.isEmpty() && minutes.isEmpty()) continue;
+            if (station.isEmpty()) throw new IllegalArgumentException("이동 시간을 입력한 역 이름도 입력해주세요.");
+            if (stations.containsKey(station)) throw new IllegalArgumentException("같은 역은 한 번만 등록해주세요.");
+            stations.put(station, minuteNumber(minutes));
+        }
+        return new StationAccessPolicy(stations, departure.getText().toString(), minuteNumber(extraTravel.getText().toString()), minuteNumber(boardingBuffer.getText().toString()));
+    }
+
+    private int minuteNumber(String text) {
+        try { return Integer.parseInt(text.trim()); }
+        catch (NumberFormatException error) { throw new IllegalArgumentException("이동 시간과 승차 여유를 분 단위 숫자로 입력해주세요."); }
+    }
+
+    private JSONObject accessSettings(StationAccessPolicy policy) throws Exception {
+        JSONArray stations = new JSONArray();
+        for (Map.Entry<String, Integer> entry : policy.stations.entrySet()) stations.put(new JSONObject().put("name", entry.getKey()).put("minutes", entry.getValue()));
+        return new JSONObject().put("baseline", policy.baseline).put("stations", stations).put("extra_minutes", policy.extraMinutes).put("boarding_minutes", policy.boardingMinutes);
+    }
+
+    private JSONObject accessPreferences() throws Exception {
+        JSONArray stations = new JSONArray();
+        for (int i = 0; i < accessStations.length; i++) stations.put(new JSONObject().put("name", accessStations[i].getText().toString()).put("minutes", accessMinutes[i].getText().toString()));
+        return new JSONObject().put("enabled", useStationAccess.isChecked()).put("stations", stations)
+            .put("extra_minutes", extraTravel.getText().toString()).put("boarding_minutes", boardingBuffer.getText().toString());
+    }
+
+    private void restoreAccessSettings() {
+        restoringAccess = true;
+        try {
+            String raw = getSharedPreferences("station_access", 0).getString("settings", null);
+            if (raw == null) { accessStations[0].setText(departure.getText()); return; }
+            JSONObject saved = new JSONObject(raw); JSONArray stations = saved.getJSONArray("stations");
+            if (stations.length() > 3) throw new IllegalArgumentException();
+            for (int i = 0; i < stations.length(); i++) {
+                accessStations[i].setText(stations.getJSONObject(i).getString("name")); accessMinutes[i].setText(stations.getJSONObject(i).getString("minutes"));
+            }
+            extraTravel.setText(saved.getString("extra_minutes")); boardingBuffer.setText(saved.getString("boarding_minutes"));
+            useStationAccess.setChecked(saved.optBoolean("enabled", false));
+        } catch (Exception error) { resetAccessSettings(); }
+        finally { restoringAccess = false; }
+    }
+
+    private void resetAccessSettings() {
+        getSharedPreferences("station_access", 0).edit().clear().apply(); useStationAccess.setChecked(false);
+        for (int i = 0; i < accessStations.length; i++) { accessStations[i].setText(i == 0 ? departure.getText() : ""); accessMinutes[i].setText(""); }
+        extraTravel.setText("30"); boardingBuffer.setText("15");
+    }
+
+    private String planSummary(JSONArray conditions) throws Exception {
+        StringBuilder summary = new StringBuilder();
+        for (int i = 0; i < conditions.length(); i++) {
+            JSONObject value = conditions.getJSONObject(i);
+            if (i > 0) summary.append("\n");
+            summary.append(i + 1).append(". ").append(value.getString("departure")).append(" → ").append(value.getString("arrival")).append(" · ")
+                .append(LocalDate.parse(value.getString("date"), DateTimeFormatter.BASIC_ISO_DATE).format(DateTimeFormatter.ofPattern("M/d")))
+                .append(" ").append(LocalTime.parse(value.getString("start"), DateTimeFormatter.ofPattern("HHmm")))
+                .append("~").append(LocalTime.parse(value.getString("end"), DateTimeFormatter.ofPattern("HHmm")));
+        }
+        return summary.toString();
     }
 
     private boolean sameCondition(JSONObject first, JSONObject second) throws Exception {
@@ -487,10 +628,16 @@ public final class MainActivity extends Activity {
         EditText view = new EditText(this); view.setHint(hint); view.setInputType(type); styleInput(view, false); add(view, 6); inputs.add(view); return view;
     }
 
+    private EditText minuteField(String label, String initial) {
+        add(text(label, 12, MUTED), 14);
+        EditText view = new EditText(this); view.setInputType(InputType.TYPE_CLASS_NUMBER); view.setHint("분"); view.setText(initial);
+        styleInput(view, false); view.setContentDescription(label); add(view, 6); inputs.add(view); return view;
+    }
+
     private EditText station(String hint, String initial) {
         add(text(hint, 11, MUTED), 0);
         AutoCompleteTextView view = new AutoCompleteTextView(this); view.setHint(hint); view.setContentDescription(hint); styleInput(view, true); view.setThreshold(1);
-        view.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_dropdown_item_1line, new String[]{"서울","용산","영등포","광명","수원","천안아산","오송","대전","김천구미","서대구","동대구","경주","울산","부산","포항","경산","밀양","구포","창원중앙","마산","진주","익산","정읍","광주송정","나주","목포","전주","남원","순천","여수엑스포","청량리","상봉","만종","평창","진부","강릉","동해","안동"}));
+        view.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_dropdown_item_1line, new String[]{"서울","용산","수서","동탄","평택지제","영등포","광명","수원","천안아산","오송","대전","김천구미","서대구","동대구","경주","울산","부산","포항","경산","밀양","구포","창원중앙","마산","진주","익산","정읍","광주송정","나주","목포","전주","남원","순천","여수엑스포","청량리","상봉","만종","평창","진부","강릉","동해","안동"}));
         view.setText(initial); add(view, 0); inputs.add(view); return view;
     }
 

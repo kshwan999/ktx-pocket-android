@@ -35,10 +35,10 @@ def validate(config, now=None):
 
 
 def validated_conditions(config, now=None):
+    access = validated_access(config.get("station_access"))
     entries = config.get("conditions")
     if entries is None:
-        start, end = validate(config, now)
-        return [(config, start, end)]
+        entries = [config]
     if not isinstance(entries, list) or not 1 <= len(entries) <= 3:
         raise ValueError("검색 조건은 1~3개로 등록해주세요.")
     plans = []
@@ -47,9 +47,42 @@ def validated_conditions(config, now=None):
             raise ValueError("검색 조건을 다시 확인해주세요.")
         condition = {key: entry.get(key) for key in ("departure", "arrival", "date", "start", "end", "passengers", "option")}
         condition.update(username=config.get("username"), password=config.get("password"), confirmed=config.get("confirmed"))
+        if access:
+            stations, limit, boarding = access
+            minutes = stations.get(condition["departure"].strip()) if isinstance(condition["departure"], str) else None
+            if minutes is None or minutes > limit:
+                raise ValueError("등록한 역과 허용 이동 시간 안의 조건만 검색할 수 있습니다.")
+            condition.update(access_minutes=minutes, boarding_minutes=boarding)
         start, end = validate(condition, now)
         plans.append((condition, start, end))
     return plans
+
+
+def validated_access(value):
+    if value is None: return None
+    if not isinstance(value, dict): raise ValueError("역 이동 시간 설정을 확인해주세요.")
+    def minutes(number, maximum):
+        if isinstance(number, bool) or not isinstance(number, int) or not 0 <= number <= maximum:
+            raise ValueError("이동 시간은 0~360분, 승차 여유는 0~120분으로 입력해주세요.")
+        return number
+    entries = value.get("stations")
+    if not isinstance(entries, list) or not 1 <= len(entries) <= 3:
+        raise ValueError("이동 시간을 등록할 역은 1~3개로 입력해주세요.")
+    stations = {}
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("name"), str) or not entry["name"].strip():
+            raise ValueError("이동 시간을 등록할 역 이름을 확인해주세요.")
+        name = entry["name"].strip()
+        if name in stations: raise ValueError("같은 역은 한 번만 등록해주세요.")
+        stations[name] = minutes(entry.get("minutes"), 360)
+    baseline = value.get("baseline")
+    if not isinstance(baseline, str) or baseline not in stations: raise ValueError("기준 출발역의 이동 시간을 등록해주세요.")
+    return stations, stations[baseline] + minutes(value.get("extra_minutes"), 360), minutes(value.get("boarding_minutes"), 120)
+
+
+def earliest_departure(condition, start, now=None):
+    lead = condition.get("access_minutes", 0) + condition.get("boarding_minutes", 0)
+    return max(start, (now or datetime.now(KST)) + timedelta(minutes=lead, seconds=5))
 
 
 def payment_deadline(reservation):
@@ -139,7 +172,7 @@ def run(config_json, directory, listener):
 
     try:
         plans = validated_conditions(config)
-        from android_transport import install
+        from android_transport import install, reservation_window, ReservationWindowClosed
         install()
         from pykorail import Korail, TrainType, AdultPassenger
         from pykorail.exceptions import (
@@ -157,9 +190,9 @@ def run(config_json, directory, listener):
         turn = 0
         while not stopped():
             now = datetime.now(KST)
-            available = [plan for plan in plans if now < plan[2]]
+            available = [plan for plan in plans if earliest_departure(plan[0], plan[1], now) < plan[2]]
             if not available:
-                status("stopped", "모든 조건의 출발 시간 범위가 지나 검색을 마쳤습니다.")
+                status("stopped", "현재 시각과 이동·승차 여유를 고려하면 탈 수 있는 시간 범위가 없어 검색을 마쳤습니다.")
                 return
             plan = available[turn % len(available)]
             condition, start, end = plan
@@ -168,7 +201,7 @@ def run(config_json, directory, listener):
             attempts += 1
             status("searching", f"조건 {plans.index(plan) + 1}/{len(plans)} · {condition['departure']} → {condition['arrival']} 좌석을 찾고 있습니다. 요청 사이 3~5초 대기합니다.")
             try:
-                trains = search_window(client, condition, max(start, now + timedelta(seconds=5)), end, passengers, stopped)
+                trains = search_window(client, condition, earliest_departure(condition, start, now), end, passengers, stopped)
                 failures = 0
             except NoResultsError:
                 pause(3)
@@ -191,6 +224,8 @@ def run(config_json, directory, listener):
                 status("searching", f"네트워크 응답을 받지 못했습니다. {delay}초 후 다시 조회합니다.")
                 pause(delay)
                 continue
+            except StationNotFoundError:
+                raise
             except KorailError:
                 failures += 1
                 if failures >= 5:
@@ -202,10 +237,14 @@ def run(config_json, directory, listener):
                 continue
             for train in trains:
                 if stopped(): break
-                if not matches(train, max(start, datetime.now(KST)), end, condition["option"]): continue
+                if not matches(train, earliest_departure(condition, start), end, condition["option"]): continue
                 status("reserving", "좌석을 발견해 예약 중입니다. 결과를 확인할 때까지 잠시 기다려주세요.")
                 try:
-                    reservation = client.reservations.create(train, passengers=passengers, option=condition["option"])
+                    latest_start = departure_of(train) - timedelta(minutes=condition.get("access_minutes", 0) + condition.get("boarding_minutes", 0))
+                    with reservation_window(latest_start.timestamp(), stopped):
+                        reservation = client.reservations.create(train, passengers=passengers, option=condition["option"])
+                except ReservationWindowClosed:
+                    continue
                 except SoldOutError:
                     continue
                 except Exception:
@@ -213,7 +252,10 @@ def run(config_json, directory, listener):
                     status("uncertain", "예약 결과를 확정하지 못해 자동 시도를 멈췄습니다. 코레일 앱의 ‘예약내역’을 먼저 확인해주세요.")
                     return
                 listener.onPaymentDeadline(payment_deadline(reservation))
-                status("success", str(reservation) + "\n\n예약 1건을 확보해 모든 조건의 검색을 마쳤습니다. 코레일 앱에서 결제 기한을 확인하고 직접 결제해주세요.")
+                travel_note = ""
+                if "access_minutes" in condition:
+                    travel_note = f"\n\n출발역 {condition['departure']} · 입력한 이동 {condition['access_minutes']}분 + 승차 여유 {condition['boarding_minutes']}분 기준, {latest_start:%m월 %d일 %H:%M}까지 이동 시작이 필요합니다. 실제 교통 상황을 확인해주세요."
+                status("success", str(reservation) + travel_note + "\n\n예약 1건을 확보해 모든 조건의 검색을 마쳤습니다. 코레일 앱에서 결제 기한을 확인하고 직접 결제해주세요.")
                 return
             pause(3)
         status("stopped", "검색을 중지했습니다." if listener.isStopped() else "5시간 45분 실행 한도에 도달했습니다. 앱에서 다시 시작할 수 있습니다.")

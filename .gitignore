@@ -10,3 +10,9 @@ local.properties
 *.aab
 *.log
 __pycache__/
+**/.build/
+**/.swiftpm/
+**/DerivedData/
+**/xcuserdata/
+*.xcuserstate
+*.ipa

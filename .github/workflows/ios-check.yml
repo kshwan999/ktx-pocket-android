@@ -1,0 +1,29 @@
+name: iOS prototype checks
+on:
+  push:
+    paths: ['ios/**', '.github/workflows/ios-check.yml']
+  pull_request:
+    paths: ['ios/**', '.github/workflows/ios-check.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_26.2.app/Contents/Developer
+      - name: Test condition and lifecycle logic
+        run: swift test --package-path ios/Core
+      - name: Build simulator app
+        run: xcodebuild -project ios/KTXPocket.xcodeproj -scheme KTXPocket -configuration Debug -destination 'generic/platform=iOS Simulator' -derivedDataPath ios/build/simulator CODE_SIGNING_ALLOWED=NO build
+      - name: Build unsigned iPhone app
+        run: xcodebuild -project ios/KTXPocket.xcodeproj -scheme KTXPocket -configuration Debug -destination 'generic/platform=iOS' -derivedDataPath ios/build/device CODE_SIGNING_ALLOWED=NO build
+      - name: Save simulator build
+        uses: actions/upload-artifact@v4
+        with:
+          name: KTX-Pocket-iOS-simulator
+          path: ios/build/simulator/Build/Products/Debug-iphonesimulator/KTXPocket.app
+          retention-days: 7

@@ -21,6 +21,13 @@ jobs:
         run: xcodebuild -project ios/KTXPocket.xcodeproj -scheme KTXPocket -configuration Debug -destination 'generic/platform=iOS Simulator' -derivedDataPath ios/build/simulator CODE_SIGNING_ALLOWED=NO build
       - name: Build unsigned iPhone app
         run: xcodebuild -project ios/KTXPocket.xcodeproj -scheme KTXPocket -configuration Debug -destination 'generic/platform=iOS' -derivedDataPath ios/build/device CODE_SIGNING_ALLOWED=NO build
+      - name: Package for Swift Playground on iPad
+        run: python3 ios/tools/package_playground.py
+      - name: Build app playground
+        working-directory: ios/build/KTX-Pocket-iPad.swiftpm
+        run: xcodebuild -scheme KTXPocketTrial -destination 'generic/platform=iOS Simulator' -derivedDataPath ../playground-build CODE_SIGNING_ALLOWED=NO build
+      - name: Verify app playground background identifiers
+        run: python3 -c 'import glob,plistlib; paths=glob.glob("ios/build/playground-build/Build/Products/Debug-iphonesimulator/*.app/Info.plist"); assert len(paths)==1; info=plistlib.load(open(paths[0],"rb")); assert info["CFBundleIdentifier"]+".probe.*" in info["BGTaskSchedulerPermittedIdentifiers"]; assert "processing" in info["UIBackgroundModes"]'
       - name: Launch simulator and capture screen
         timeout-minutes: 5
         run: |
@@ -40,4 +47,5 @@ jobs:
           path: |
             ios/build/KTX-Pocket-iOS-simulator-app.zip
             ios/build/ios-first-screen.png
+            ios/build/KTX-Pocket-iPad.zip
           retention-days: 7

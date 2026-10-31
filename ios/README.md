@@ -17,16 +17,29 @@
 
 알림 권한을 거절해도 측정할 수 있지만 결과는 앱에서 직접 확인해야 합니다. 운영체제·집중 모드 등에 따라 알림이 늦거나 표시되지 않을 수 있습니다.
 
-## 맥에서 실행하기
+## 아이패드만 있을 때
 
-필요한 환경은 **Xcode 26.2 이상을 실행할 수 있는 맥과 iOS 26 이상인 아이폰**입니다. 백그라운드 실행 여부는 실제 아이폰에서 확인해야 합니다. 시뮬레이터로 설치 화면을 볼 수는 있지만 기기의 잠금·절전·실행 제한을 검증할 수 없습니다.
+Swift Playground 4.7 이상과 iPadOS 26 이상에서 열 수 있는 `.swiftpm` 프로젝트 묶음을 제공합니다. Swift Playground 4.7은 iOS 26 개발 도구를 포함합니다. [애플 앱 안내](https://apps.apple.com/app/id908519492)
+
+1. 아이패드에 Swift Playground를 설치하거나 최신 버전으로 업데이트합니다.
+2. 제공된 `KTX-Pocket-iPad.zip`을 파일 앱에 저장하고 압축을 풉니다.
+3. `KTX-Pocket-iPad.swiftpm`을 Swift Playground로 엽니다.
+4. 앱 실행 버튼으로 별도 창을 연 뒤 아래 순서에 따라 짧은 시험부터 진행합니다. 편집기 옆 미리보기만으로 백그라운드 동작을 판단하지 마세요.
+
+추가 설정 파일에 백그라운드 작업 모드와 허용 식별자를 포함했습니다. 앱 식별자나 앱 설정을 바꿔 이 설정이 사라지면 시험 시작을 막고 안내합니다. 원본 묶음을 다시 열어 확인해주세요. 파일 묶음은 Xcode에서도 검사하지만 **실제 아이패드의 Swift Playground에서 실행한 결과는 별도 확인이 필요합니다.**
+
+아이패드에서 직접 실행하는 것과 아이폰에 설치하는 것은 다릅니다. 아이폰으로 배포하려면 개발 계정·서명·배포 절차가 추가로 필요합니다. 아이패드에서 앱을 만들어 App Store Connect로 제출하는 경로는 있지만, 이번 작업에서 앱스토어·테스트플라이트 배포는 구성하지 않았습니다. [애플의 실행 안내](https://support.apple.com/guide/playgrounds-ipad/run-your-app-itc650868b1f/ipados), [공유·제출 안내](https://support.apple.com/guide/playgrounds-ipad/share-a-playground-itc65b2d9a15/ipados)
+
+## 맥이 있을 때
+
+필요한 환경은 **Xcode 26.2 이상을 실행할 수 있는 맥과 iOS·iPadOS 26 이상인 기기**입니다. 백그라운드 실행 여부는 실제 기기에서 확인해야 합니다. 시뮬레이터로 설치 화면을 볼 수는 있지만 기기의 잠금·절전·실행 제한을 검증할 수 없습니다.
 
 1. 저장소를 내려받고 `ios/KTXPocket.xcodeproj`를 Xcode로 엽니다.
 2. 앱 대상 `KTXPocket`의 **Signing & Capabilities**에서 본인의 개발 팀을 선택합니다. 작업 식별자는 앱 식별자에서 자동으로 만들어집니다.
 3. 아이폰을 연결하고 실행 기기로 선택합니다. 필요하면 기기의 개발자 모드를 켜고 맥을 신뢰하도록 설정합니다.
 4. Xcode의 실행 버튼으로 설치합니다. 별도 서버 주소나 텔레그램 토큰은 필요하지 않습니다.
 
-윈도우에서는 Xcode로 아이폰 앱을 만들거나 서명할 수 없습니다. 이 저장소의 자동 검사는 깃허브의 맥 환경에서 수행하며, **서명 없는 빌드 결과나 시뮬레이터용 앱을 아이폰에 바로 설치할 수는 없습니다.** 기기 설치에는 본인의 개발 팀으로 서명해야 합니다. 앱스토어·테스트플라이트 배포는 아직 구성하지 않았습니다.
+윈도우에서는 Xcode로 아이폰 앱을 만들거나 서명할 수 없습니다. 이 저장소의 자동 검사는 깃허브의 맥 환경에서 수행하며, **서명 없는 빌드 결과나 시뮬레이터용 앱을 아이폰에 바로 설치할 수는 없습니다.** Xcode를 통한 기기 설치에는 본인의 개발 팀으로 서명해야 합니다.
 
 ## 실행 시험 방법
 
@@ -59,6 +72,7 @@
 - `KTXPocket/`: 아이폰 화면, 백그라운드 작업 수명 관리, 파일 저장, 알림
 - `Core/`: 플랫폼과 분리한 조건 검증·후보 계산·측정 기록·중단 처리 및 단위 검사
 - `KTXPocket.xcodeproj`: 추가 생성 도구 없이 열 수 있는 Xcode 프로젝트
+- `tools/package_playground.py`: 같은 소스를 복사해 아이패드용 프로젝트 묶음을 만드는 도구
 - `../.github/workflows/ios-check.yml`: 맥에서 단위 검사, 시뮬레이터용 빌드, 서명 없는 아이폰용 빌드
 
 추가 외부 프레임워크는 사용하지 않습니다. 화면은 SwiftUI, 실행 작업은 `BGContinuedProcessingTask`, 알림은 애플의 알림 기능으로 구성했습니다. 계정 저장·코레일 통신·결제 재알림은 이번 아이폰 버전에 연결하지 않았습니다.
@@ -78,5 +92,13 @@ xcodebuild -project ios/KTXPocket.xcodeproj -scheme KTXPocket \
 ```
 
 검사 결과는 저장소의 **Actions → iOS prototype checks**에서 확인합니다. 자동 검사가 통과해도 실제 기기의 화면·알림·잠금 상태 실행을 확인한 것은 아닙니다.
+
+아이패드용 프로젝트 묶음 만들기:
+
+```sh
+python3 ios/tools/package_playground.py
+```
+
+새 `ios/build/KTX-Pocket-iPad.swiftpm` 폴더와 배포용 압축 파일을 만듭니다. 이미 있는 출력 폴더는 덮어쓰거나 지우지 않습니다.
 
 애플의 [장시간 작업 문서](https://developer.apple.com/documentation/backgroundtasks/performing-long-running-tasks-on-ios-and-ipados)와 [백그라운드 실행 설명](https://developer.apple.com/videos/play/wwdc2025/227/)을 기준으로 구성했습니다. 이 API는 사용자가 직접 시작한 유한한 작업을 위한 기능입니다. 빈자리 감시 용도로 적합한지는 실제 기기 결과와 애플의 정책을 함께 검토해야 하며, 앱스토어 심사 통과를 가정하지 않습니다.

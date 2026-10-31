@@ -56,6 +56,11 @@ final class TrialController {
             try store.saveDraft(confirmedDraft); try store.saveReport(run)
             record = run
             let identifier = (Bundle.main.bundleIdentifier ?? "kr.personal.ktxpocket.ios") + ".probe." + run.id.uuidString
+            let permitted = Bundle.main.object(forInfoDictionaryKey: "BGTaskSchedulerPermittedIdentifiers") as? [String] ?? []
+            let pattern = (Bundle.main.bundleIdentifier ?? "kr.personal.ktxpocket.ios") + ".probe.*"
+            guard permitted.contains(pattern) else {
+                throw InputError("앱의 백그라운드 작업 설정이 맞지 않아요. Swift Playground에서 앱 식별자나 설정을 바꿨다면 원본 프로젝트를 다시 열어주세요.")
+            }
             requestID = identifier
             let registered = BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: .main) { [weak self] task in
                 // The callback is explicitly dispatched on the main queue; observable state stays on MainActor.

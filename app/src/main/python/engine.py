@@ -130,7 +130,7 @@ def run(config_json, directory, listener):
                 status("stopped", "설정한 출발 시간 범위가 지나 검색을 마쳤습니다.")
                 return
             attempts += 1
-            status("searching", "조건에 맞는 좌석을 찾고 있습니다. 조회 요청 간격은 최소 3초입니다.")
+            status("searching", "조건에 맞는 좌석을 찾고 있습니다. 요청 사이에 3~5초 무작위로 대기합니다.")
             try:
                 trains = search_window(client, config, max(start, now + timedelta(seconds=5)), end, passengers, stopped)
                 failures = 0
@@ -145,22 +145,24 @@ def run(config_json, directory, listener):
                 client.reservations.all()
                 continue
             except (TransportError, HttpStatusError) as error:
-                if isinstance(error, AccessRestrictedError) or getattr(error, "status_code", None) == 403:
+                if isinstance(error, AccessRestrictedError) or getattr(error, "status_code", None) in (403, 429):
                     raise
                 failures += 1
                 if failures >= 5:
                     status("error", "통신 오류가 5회 이어져 검색을 중지했습니다. 네트워크와 코레일 상태를 확인해주세요.")
                     return
-                status("searching", "네트워크 응답을 받지 못했습니다. 30초 후 다시 조회합니다.")
-                pause(30)
+                delay = min(120, 30 * 2 ** (failures - 1))
+                status("searching", f"네트워크 응답을 받지 못했습니다. {delay}초 후 다시 조회합니다.")
+                pause(delay)
                 continue
             except KorailError:
                 failures += 1
                 if failures >= 5:
                     status("error", "코레일이 조회를 계속 거절해 중지했습니다. 공식 앱에서 상태를 확인해주세요.")
                     return
-                status("searching", "코레일 조회가 잠시 지연됩니다. 30초 후 다시 확인합니다.")
-                pause(30)
+                delay = min(120, 30 * 2 ** (failures - 1))
+                status("searching", f"코레일 조회가 잠시 지연됩니다. {delay}초 후 다시 확인합니다.")
+                pause(delay)
                 continue
             for train in trains:
                 if stopped(): break
@@ -180,7 +182,7 @@ def run(config_json, directory, listener):
         status("stopped", "검색을 중지했습니다." if listener.isStopped() else "5시간 45분 실행 한도에 도달했습니다. 앱에서 다시 시작할 수 있습니다.")
     except Exception as error:
         from pykorail.exceptions import AccessRestrictedError, NeedToLoginError, LoginFailedError, PasswordChangeRequiredError, StationNotFoundError, HttpStatusError
-        if isinstance(error, AccessRestrictedError) or (isinstance(error, HttpStatusError) and error.status_code == 403):
+        if isinstance(error, AccessRestrictedError) or (isinstance(error, HttpStatusError) and error.status_code in (403, 429)):
             message = "코레일에서 접속을 제한해 검색을 중지했습니다. 같은 연결로 자동 재시도하지 않습니다."
         elif isinstance(error, (LoginFailedError, PasswordChangeRequiredError, NeedToLoginError)):
             message = "로그인을 완료하지 못했습니다. 코레일 앱에서 비밀번호와 계정 안내를 먼저 확인해주세요."

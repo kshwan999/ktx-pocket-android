@@ -72,16 +72,58 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(listener.onStatus.call_args.args[0], "uncertain")
 
     def test_access_restriction_stops_without_retry(self):
-        from pykorail.exceptions import AccessRestrictedError
+        from pykorail.exceptions import AccessRestrictedError, HttpStatusError
+        for error in (AccessRestrictedError(403, "test restriction", "-8202"), HttpStatusError(403), HttpStatusError(429)):
+            with self.subTest(error=error):
+                client, listener, moments, clock = self.run_search_outcomes([error] * 5)
+                client.trains.search.assert_called_once()
+                client.reservations.create.assert_not_called()
+                self.assertEqual(listener.onStatus.call_args.args[0], "error")
+
+    def run_search_outcomes(self, outcomes, stop_at=None):
+        clock = [100.0]
+        moments = []
         client = Mock()
-        client.trains.search.side_effect = AccessRestrictedError(403, "test restriction", "-8202")
+
+        def search(*args, **kwargs):
+            moments.append(clock[0])
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception): raise outcome
+            return outcome
+
+        client.trains.search.side_effect = search
         listener = Mock()
-        listener.isStopped.return_value = False
-        with patch("android_transport.install"), patch("pykorail.Korail", return_value=client), patch("engine.device_profile", return_value=None):
+        listener.isStopped.side_effect = lambda: stop_at is not None and clock[0] >= stop_at
+        with patch("android_transport.install"), patch("pykorail.Korail", return_value=client), patch("engine.device_profile", return_value=None), \
+             patch("engine.time.monotonic", side_effect=lambda: clock[0]), \
+             patch("engine.time.sleep", side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)):
             engine.run(json.dumps(self.config), "unused-test-directory", listener)
+        return client, listener, moments, clock[0]
+
+    def test_error_backoff_grows_caps_and_stops_after_five_failures(self):
+        from pykorail.exceptions import TransportError, HttpStatusError, KorailError
+        for error in (TransportError("test"), HttpStatusError(503), KorailError("test")):
+            with self.subTest(error=error):
+                client, listener, moments, clock = self.run_search_outcomes([error] * 5)
+                self.assertEqual(client.trains.search.call_count, 5)
+                for actual, expected in zip(moments, [100, 130, 190, 310, 430]):
+                    self.assertAlmostEqual(actual, expected)
+                self.assertEqual(listener.onStatus.call_args.args[0], "error")
+
+    def test_successful_query_resets_backoff(self):
+        from pykorail.exceptions import TransportError, AccessRestrictedError
+        error = TransportError("test")
+        _, _, moments, _ = self.run_search_outcomes([error, error, [], error, AccessRestrictedError(403)])
+        self.assertEqual(len(moments), 5)
+        for actual, expected in zip(moments, [100, 130, 190, 193, 223]):
+            self.assertAlmostEqual(actual, expected)
+
+    def test_stop_during_backoff_prevents_retry(self):
+        from pykorail.exceptions import TransportError
+        client, listener, _, clock = self.run_search_outcomes([TransportError("test")], stop_at=101)
         client.trains.search.assert_called_once()
-        client.reservations.create.assert_not_called()
-        self.assertEqual(listener.onStatus.call_args.args[0], "error")
+        self.assertLess(clock, 102)
+        self.assertEqual(listener.onStatus.call_args.args[0], "stopped")
 
     def test_device_identity_is_preserved(self):
         with TemporaryDirectory(dir=Path(__file__).parent) as directory:
@@ -90,17 +132,47 @@ class EngineTests(unittest.TestCase):
             self.assertEqual(first.id, second.id)
             self.assertEqual(first.android_id, second.android_id)
 
-    def test_transport_keeps_minimum_three_second_request_gap(self):
+    def test_transport_randomizes_gap_without_going_below_three_seconds(self):
         import android_transport as transport
         session = object.__new__(transport.AndroidSession)
         session.headers = {"User-Agent": "test"}
         session.native = Mock()
         session.native.exchange.return_value = json.dumps({"status_code": 200, "text": "{}"})
-        with patch.object(transport, "_last_finished", 100), patch.object(transport.time, "monotonic", side_effect=[101, 103]), patch.object(transport.time, "sleep") as sleep:
-            response = session.get("https://example.invalid/search", params={"station": "서울"})
-            sleep.assert_called_once_with(2.0)
-            self.assertEqual(response.status_code, 200)
-            self.assertIn("station=%EC%84%9C%EC%9A%B8", session.native.exchange.call_args.args[0])
+        for gap in (3.0, 4.2, 5.0):
+            with self.subTest(gap=gap), patch.object(transport, "_last_finished", 100), \
+                 patch.object(transport.time, "monotonic", side_effect=[101, 103]), \
+                 patch("android_transport.random.uniform", return_value=gap) as uniform, \
+                 patch.object(transport.time, "sleep") as sleep:
+                response = session.get("https://example.invalid/search", params={"station": "서울"})
+                uniform.assert_called_once_with(3.0, 5.0)
+                sleep.assert_called_once_with(gap - 1.0)
+                self.assertEqual(response.status_code, 200)
+                self.assertIn("station=%EC%84%9C%EC%9A%B8", session.native.exchange.call_args.args[0])
+
+    def test_transport_gap_is_global_and_starts_after_success_or_failure_finishes(self):
+        import android_transport as transport
+        from pykorail.exceptions import TransportError
+        clock = [100.0]
+        moments = []
+
+        def exchange(*args):
+            moments.append(clock[0])
+            clock[0] += 7.0
+            if len(moments) == 2: raise OSError("test network failure")
+            return json.dumps({"status_code": 200, "text": "{}"})
+
+        first, second = (object.__new__(transport.AndroidSession) for _ in range(2))
+        for session in (first, second):
+            session.headers = {}
+            session.native = SimpleNamespace(exchange=exchange)
+        with patch.object(transport, "_last_finished", 0), \
+             patch.object(transport.time, "monotonic", side_effect=lambda: clock[0]), \
+             patch.object(transport.time, "sleep", side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)), \
+             patch("android_transport.random.uniform", return_value=3.0):
+            first.get("https://example.invalid/login")
+            with self.assertRaises(TransportError): second.post("https://example.invalid/search")
+            first.get("https://example.invalid/search")
+        self.assertEqual(moments, [100, 110, 120])
 
     def test_native_network_failure_is_translated_without_request_details(self):
         import android_transport as transport

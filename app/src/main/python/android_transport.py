@@ -1,5 +1,6 @@
 """Adapt pykorail's HTTP session protocol to Android HTTPS without curl-cffi."""
 import json
+import random
 import threading
 import time
 from urllib.parse import urlencode
@@ -28,7 +29,8 @@ class AndroidSession:
         combined = {**self.headers, **(headers or {})}
         # A single global gate also paces login and reservation requests, not just searches.
         with _gate:
-            time.sleep(max(0.0, 3.0 - (time.monotonic() - _last_finished)))
+            gap = random.uniform(3.0, 5.0)
+            time.sleep(max(0.0, gap - (time.monotonic() - _last_finished)))
             try:
                 result = self.native.exchange(url, method, json.dumps(combined), body)
                 return Response(json.loads(str(result)))

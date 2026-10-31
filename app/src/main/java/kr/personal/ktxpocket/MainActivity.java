@@ -90,7 +90,7 @@ public final class MainActivity extends Activity {
             Intent launch = getPackageManager().getLaunchIntentForPackage("com.korail.talk");
             if (launch != null) startActivity(launch); else toast("코레일톡 앱을 설치한 뒤 예약내역을 확인해주세요.");
         }); add(pay, 8);
-        add(text("최소 3초 간격 · 개인용 · 집 Wi-Fi 사용 권장\n한 번에 최대 5시간 45분 검색합니다. 안드로이드나 절전 설정에 의해 더 일찍 중단될 수 있습니다. 앱을 강제 종료하면 검색도 끝납니다.", 12, MUTED), 18);
+        add(text("3~5초 무작위 대기 · 개인용 · 집 Wi-Fi 사용 권장\n한 번에 최대 5시간 45분 검색합니다. 안드로이드나 절전 설정에 의해 더 일찍 중단될 수 있습니다. 앱을 강제 종료하면 검색도 끝납니다.", 12, MUTED), 18);
         Button battery = new Button(this); battery.setText("휴대폰 배터리 최적화 설정 열기"); battery.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))); add(battery, 10);
         TextView about = text("비공식 개인용 앱 · 원작 및 이용 조건", 12, GREEN); about.setPadding(0, dp(18), 0, dp(12)); about.setOnClickListener(v -> about()); add(about, 0);
     }
@@ -200,7 +200,7 @@ public final class MainActivity extends Activity {
         state.setText(label); state.setTextColor(kind.equals("error") || kind.equals("uncertain") ? Color.rgb(159,65,42) : GREEN);
         detail.setText(message);
         int count = prefs.getInt("attempts", 0);
-        attempts.setText(count == 0 ? "휴대폰 단독 실행 · PC 연결 불필요" : count + "회 조회 · 요청 사이 최소 3초 대기");
+        attempts.setText(count == 0 ? "휴대폰 단독 실행 · PC 연결 불필요" : count + "회 조회 · 요청 사이 3~5초 무작위 대기");
         start.setEnabled(!active); stop.setEnabled(active);
         for (View input : inputs) input.setEnabled(!active);
     }

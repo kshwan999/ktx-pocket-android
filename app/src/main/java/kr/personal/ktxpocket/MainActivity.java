@@ -27,6 +27,11 @@ public final class MainActivity extends Activity {
     private Button dateButton, fromButton, toButton, start, stop;
     private Spinner people, seat;
     private LinearLayout content;
+    private CredentialStore credentialStore;
+    private CheckBox rememberId, rememberPassword;
+    private TextView credentialNote;
+    private Button forgetCredentials;
+    private boolean applyingCredentials;
     private LocalDate date = LocalDate.now(ZoneId.of("Asia/Seoul")).plusDays(1);
     private LocalTime from = LocalTime.of(9, 0), to = LocalTime.of(18, 0);
     private final Runnable refresh = new Runnable() { public void run() { renderStatus(); handler.postDelayed(this, 1000); } };
@@ -63,7 +68,7 @@ public final class MainActivity extends Activity {
         section("01", "코레일 로그인");
         username = field("회원번호 · 이메일 · 휴대폰 번호", InputType.TYPE_CLASS_TEXT); username.setSaveEnabled(false);
         password = field("코레일 비밀번호", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD); password.setSaveEnabled(false);
-        add(text("로그인 정보는 저장하지 않습니다. 계정 안내가 있으면 코레일 앱에서 먼저 처리해주세요.", 12, MUTED), 8);
+        setupCredentialMemory();
         section("02", "어떤 열차를 찾을까요?");
         departure = station("출발역", "서울");
         arrival = station("도착역", "부산");
@@ -114,9 +119,64 @@ public final class MainActivity extends Activity {
                 .put("end", to.format(DateTimeFormatter.ofPattern("HHmm"))).put("passengers", people.getSelectedItemPosition()+1)
                 .put("option", options[seat.getSelectedItemPosition()]).put("confirmed", true);
             startForegroundService(new Intent(this, SearchService.class).putExtra("config", config.toString()));
-            password.setText("");
+            try {
+                credentialStore.save(username.getText().toString().trim(), password.getText().toString(), rememberId.isChecked(), rememberPassword.isChecked());
+                credentialNote.setText(rememberPassword.isChecked() ? "아이디와 비밀번호를 이 휴대폰에 암호화해 기억합니다." : rememberId.isChecked() ? "아이디만 기억합니다. 비밀번호는 저장하지 않습니다." : "로그인 정보를 기억하지 않습니다.");
+            } catch (Exception error) { credentialNote.setText("로그인 정보를 저장하지 못했습니다. 검색은 계속 진행합니다."); }
+            forgetCredentials.setEnabled(credentialStore.hasSaved());
+            if (!rememberPassword.isChecked()) password.setText("");
             start.setEnabled(false);
         } catch (Exception error) { toast("검색 서비스를 시작하지 못했습니다. 앱을 열어둔 상태에서 다시 시도해주세요."); }
+    }
+
+    private void setupCredentialMemory() {
+        credentialStore = new CredentialStore(this);
+        rememberId = new CheckBox(this); rememberId.setText("아이디 기억"); rememberId.setMinHeight(dp(48)); add(rememberId, 4); inputs.add(rememberId);
+        rememberPassword = new CheckBox(this); rememberPassword.setText("비밀번호도 기억 · 이 휴대폰에 암호화 저장"); rememberPassword.setMinHeight(dp(48)); add(rememberPassword, 0); inputs.add(rememberPassword);
+        credentialNote = text("선택한 정보는 검색을 시작할 때 기억하며, 다음 실행에 자동 입력됩니다.", 12, MUTED); add(credentialNote, 4);
+        forgetCredentials = new Button(this); forgetCredentials.setText("저장된 로그인 정보 지우기"); add(forgetCredentials, 6);
+        applyingCredentials = true;
+        try {
+            CredentialStore.Saved saved = credentialStore.load();
+            username.setText(saved.username); password.setText(saved.password);
+            rememberId.setChecked(!saved.username.isEmpty()); rememberPassword.setChecked(!saved.password.isEmpty());
+            if (!saved.password.isEmpty()) credentialNote.setText("이 휴대폰에 암호화해 둔 로그인 정보를 불러왔습니다.");
+            else if (!saved.username.isEmpty()) credentialNote.setText("저장된 아이디를 불러왔습니다. 비밀번호는 입력해주세요.");
+        } catch (Exception error) {
+            try { credentialStore.clear(); } catch (Exception ignored) { }
+            credentialNote.setText("저장된 정보를 열지 못했습니다. 로그인 정보를 다시 입력해주세요.");
+        }
+        applyingCredentials = false;
+        forgetCredentials.setEnabled(credentialStore.hasSaved());
+        rememberId.setOnCheckedChangeListener((button, checked) -> {
+            if (applyingCredentials || checked) return;
+            applyingCredentials = true; rememberPassword.setChecked(false); applyingCredentials = false;
+            try { credentialStore.clear(); credentialNote.setText("기억을 해제하고 저장된 로그인 정보를 지웠습니다."); }
+            catch (Exception error) { credentialNote.setText("저장된 정보 삭제를 완료하지 못했습니다. 지우기 버튼으로 다시 시도해주세요."); }
+            forgetCredentials.setEnabled(credentialStore.hasSaved());
+        });
+        rememberPassword.setOnCheckedChangeListener((button, checked) -> {
+            if (applyingCredentials) return;
+            if (checked) {
+                rememberId.setChecked(true);
+                credentialNote.setText("검색을 시작하면 아이디와 비밀번호를 이 휴대폰에 암호화해 기억합니다.");
+            } else {
+                try { credentialStore.forgetPassword(); credentialNote.setText("저장된 비밀번호를 지웠습니다. 현재 입력한 값은 이번 검색에만 사용합니다."); }
+                catch (Exception error) { credentialNote.setText("저장된 비밀번호 삭제를 완료하지 못했습니다. 지우기 버튼으로 다시 시도해주세요."); }
+                forgetCredentials.setEnabled(credentialStore.hasSaved());
+            }
+        });
+        forgetCredentials.setOnClickListener(view -> {
+            try {
+                credentialStore.clear();
+                applyingCredentials = true;
+                rememberId.setChecked(false); rememberPassword.setChecked(false);
+                username.setText(""); password.setText("");
+                applyingCredentials = false;
+                credentialNote.setText(SearchService.running ? "저장된 정보를 지웠습니다. 이미 시작한 검색은 계속 진행합니다." : "저장된 로그인 정보를 지웠습니다.");
+                forgetCredentials.setEnabled(false);
+            } catch (Exception error) { credentialNote.setText("삭제를 완료하지 못했습니다. 다시 시도해주세요."); }
+        });
     }
 
     private void renderStatus() {

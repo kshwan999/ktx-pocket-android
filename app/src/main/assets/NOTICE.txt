@@ -1,5 +1,5 @@
 KTX 자리찾기 — 개인용 테스트 앱
-원작: GeunSam2/korail_KTX_macro_telegrambot
+Android 앱 화면과 검색 실행 흐름은 이 프로젝트에서 구현했습니다.
 통신 라이브러리: devgyurak/pykorail 0.5.1
 개인용으로만 사용하며 조회 요청 간격은 최소 3초입니다.
 별도 서버나 텔레그램 토큰은 사용하지 않습니다.

@@ -92,7 +92,7 @@ public final class MainActivity extends Activity {
         }); add(pay, 8);
         add(text("3~5초 무작위 대기 · 개인용 · 집 Wi-Fi 사용 권장\n한 번에 최대 5시간 45분 검색합니다. 안드로이드나 절전 설정에 의해 더 일찍 중단될 수 있습니다. 앱을 강제 종료하면 검색도 끝납니다.", 12, MUTED), 18);
         Button battery = new Button(this); battery.setText("휴대폰 배터리 최적화 설정 열기"); battery.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))); add(battery, 10);
-        TextView about = text("비공식 개인용 앱 · 원작 및 이용 조건", 12, GREEN); about.setPadding(0, dp(18), 0, dp(12)); about.setOnClickListener(v -> about()); add(about, 0);
+        TextView about = text("비공식 개인용 앱 · 사용 라이브러리 및 이용 조건", 12, GREEN); about.setPadding(0, dp(18), 0, dp(12)); about.setOnClickListener(v -> about()); add(about, 0);
     }
 
     private void confirm() {
@@ -214,7 +214,7 @@ public final class MainActivity extends Activity {
             String notice = bytes.toString(java.nio.charset.StandardCharsets.UTF_8.name());
             TextView view = text(notice, 12, INK); view.setPadding(dp(20), dp(16), dp(20), dp(16));
             ScrollView scroll = new ScrollView(this); scroll.addView(view);
-            new AlertDialog.Builder(this).setTitle("원작 및 이용 조건").setView(scroll).setPositiveButton("닫기", null).show();
+            new AlertDialog.Builder(this).setTitle("사용 라이브러리 및 이용 조건").setView(scroll).setPositiveButton("닫기", null).show();
         } catch (Exception error) { toast("이용 조건 파일을 읽지 못했습니다."); }
     }
     private void chooseTime(boolean first) { LocalTime current = first ? from : to; new TimePickerDialog(this, (picker,h,m) -> { if (first) from=LocalTime.of(h,m); else to=LocalTime.of(h,m); updateTimes(); },current.getHour(),current.getMinute(),true).show(); }

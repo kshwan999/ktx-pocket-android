@@ -1,0 +1,35 @@
+plugins {
+    id 'com.android.application'
+    id 'com.chaquo.python'
+}
+android {
+    namespace 'kr.personal.ktxpocket'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'kr.personal.ktxpocket'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '0.1.0'
+        ndk { abiFilters 'arm64-v8a' }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    buildTypes { release { minifyEnabled false } }
+}
+chaquopy {
+    defaultConfig {
+        version '3.13'
+        if (project.hasProperty('buildPython')) { buildPython project.property('buildPython') }
+        pip {
+            // Android supplies the HTTP transport; desktop curl-cffi is not used.
+            options '--no-deps'
+            install 'pykorail==0.5.1'
+            install 'pycryptodome==3.21.0'
+            install 'cffi==1.17.1'
+            install 'pycparser==2.22'
+        }
+    }
+}

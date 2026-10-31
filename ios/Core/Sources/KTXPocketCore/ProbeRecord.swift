@@ -11,7 +11,7 @@ public enum ProbePhase: String, Codable, Sendable {
         case .stopped: "직접 중지함"
         case .expired: "시스템에서 중단됨"
         case .interrupted: "이전 실행이 종료됨"
-        case .failed: "시험을 시작하지 못함"
+        case .failed: "실행 시험 오류"
         }
     }
 }
@@ -33,6 +33,7 @@ public struct ProbeRecord: Codable, Identifiable, Sendable {
     public let requestedAt: Date
     public private(set) var startedAt: Date?
     public private(set) var endedAt: Date?
+    public private(set) var detectedInterruptionAt: Date?
     public let durationSeconds: Int
     public let plans: [SearchPlan]
     public private(set) var samples: [ProbeSample] = []
@@ -71,7 +72,11 @@ public struct ProbeRecord: Codable, Identifiable, Sendable {
     }
 
     public mutating func recoverAfterRelaunch(now: Date) {
-        finish(.interrupted, now: now, note: "이전 실행이 완료되지 않은 상태로 앱이 다시 열렸습니다. 중단 시각과 원인은 확정할 수 없으며 자동 재개하지 않습니다.")
+        guard phase.isActive else { return }
+        phase = .interrupted
+        detectedInterruptionAt = now
+        endedAt = nil
+        note = "이전 실행이 완료되지 않은 상태로 앱이 다시 열렸습니다. 중단 시각과 원인은 확정할 수 없으며 자동 재개하지 않습니다."
     }
 
     public var elapsedSeconds: TimeInterval { samples.last?.elapsedSeconds ?? 0 }

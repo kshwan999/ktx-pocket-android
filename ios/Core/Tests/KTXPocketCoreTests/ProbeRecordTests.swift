@@ -54,6 +54,7 @@ final class ProbeRecordTests: XCTestCase {
         restored.recoverAfterRelaunch(now: now.addingTimeInterval(300))
         XCTAssertEqual(restored.phase, .interrupted); XCTAssertEqual(restored.samples.count, 1)
         XCTAssertEqual(restored.networkRequests, 0); XCTAssertTrue(restored.note.contains("확정할 수 없으며"))
+        XCTAssertNil(restored.endedAt); XCTAssertEqual(restored.detectedInterruptionAt, now.addingTimeInterval(300))
         XCTAssertFalse(restored.start(now: now, uptime: 500))
     }
     func testNoUnmeasuredProgressAndProgressNeverExceedsOne() throws {

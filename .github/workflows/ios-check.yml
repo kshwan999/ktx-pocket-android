@@ -22,6 +22,7 @@ jobs:
       - name: Build unsigned iPhone app
         run: xcodebuild -project ios/KTXPocket.xcodeproj -scheme KTXPocket -configuration Debug -destination 'generic/platform=iOS' -derivedDataPath ios/build/device CODE_SIGNING_ALLOWED=NO build
       - name: Launch simulator and capture screen
+        timeout-minutes: 5
         run: |
           DEVICE=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; devices=json.load(sys.stdin)["devices"]; print(next(d["udid"] for runtime,rows in devices.items() if "iOS-26" in runtime for d in rows if d["name"].startswith("iPhone")))')
           xcrun simctl boot "$DEVICE"
@@ -30,11 +31,13 @@ jobs:
           xcrun simctl launch "$DEVICE" kr.personal.ktxpocket.ios
           sleep 3
           xcrun simctl io "$DEVICE" screenshot ios/build/ios-first-screen.png
+      - name: Package simulator app with executable permissions
+        run: ditto -c -k --sequesterRsrc --keepParent ios/build/simulator/Build/Products/Debug-iphonesimulator/KTXPocket.app ios/build/KTX-Pocket-iOS-simulator-app.zip
       - name: Save simulator build
         uses: actions/upload-artifact@v4
         with:
           name: KTX-Pocket-iOS-simulator
           path: |
-            ios/build/simulator/Build/Products/Debug-iphonesimulator/KTXPocket.app
+            ios/build/KTX-Pocket-iOS-simulator-app.zip
             ios/build/ios-first-screen.png
           retention-days: 7

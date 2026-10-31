@@ -13,6 +13,7 @@ import android.text.InputType;
 import android.view.*;
 import android.widget.*;
 import org.json.JSONObject;
+import org.json.JSONArray;
 import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -27,6 +28,12 @@ public final class MainActivity extends Activity {
     private Button dateButton, fromButton, toButton, start, stop;
     private Spinner people, seat;
     private LinearLayout content;
+    private LinearLayout alternativeList;
+    private TextView recentNote;
+    private Button dismissReminder;
+    private final ArrayList<JSONObject> alternatives = new ArrayList<>();
+    private final ArrayList<View> alternativeButtons = new ArrayList<>();
+    private final String[] seatLabels = {"일반실만", "일반실 우선 · 없으면 특실", "특실만", "특실 우선 · 없으면 일반실"};
     private CredentialStore credentialStore;
     private CheckBox rememberId, rememberPassword;
     private TextView credentialNote;
@@ -39,6 +46,7 @@ public final class MainActivity extends Activity {
 
     @Override public void onCreate(Bundle saved) {
         super.onCreate(saved);
+        SearchAlerts.createChannel(this);
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
         ScrollView scroll = new ScrollView(this);
         scroll.setFillViewport(true);
@@ -78,8 +86,27 @@ public final class MainActivity extends Activity {
         updateTimes();
         add(text("종료 시간은 포함하지 않습니다. 모든 시간은 한국시간 기준입니다.", 12, MUTED), 6);
         people = spinner(new String[]{"어른 1명", "어른 2명", "어른 3명", "어른 4명", "어른 5명", "어른 6명"});
-        seat = spinner(new String[]{"일반실만", "일반실 우선 · 없으면 특실", "특실만", "특실 우선 · 없으면 일반실"});
+        seat = spinner(seatLabels);
         add(text("여러 명은 한 번에 예약합니다. 인접 좌석 배정은 보장되지 않습니다.", 12, MUTED), 8);
+        recentNote = text("검색을 시작한 조건을 기억합니다. 다음 실행 때 자동으로 불러옵니다.", 12, MUTED); add(recentNote, 10);
+        add(text("현재 입력 조건과 추가한 대안을 함께 검색합니다. 최대 3개 중 하나가 예약되면 전체 검색을 종료합니다.", 13, INK), 14);
+        control("이 조건을 대안 목록에 추가", () -> {
+            try {
+                JSONObject current = currentCondition();
+                checkCondition(current);
+                for (JSONObject other : alternatives) if (sameCondition(current, other)) { toast("이미 추가한 조건입니다."); return; }
+                if (alternatives.size() >= 2) { toast("대안은 2개까지 추가할 수 있습니다. 현재 입력 조건까지 최대 3개를 검색합니다."); return; }
+                alternatives.add(current); renderAlternatives();
+                toast("목록에 추가했습니다. 이제 입력란을 다른 날짜나 시간으로 바꿔주세요.");
+            } catch (Exception error) { toast("역 이름과 날짜·시간을 확인해주세요."); }
+        });
+        alternativeList = new LinearLayout(this); alternativeList.setOrientation(LinearLayout.VERTICAL); add(alternativeList, 4);
+        control("기억한 검색 조건 지우기", () -> {
+            getSharedPreferences("recent_search", 0).edit().clear().apply();
+            alternatives.clear(); renderAlternatives();
+            recentNote.setText("기억한 검색 조건을 지웠습니다. 현재 입력란은 이번 검색에 사용할 수 있습니다.");
+        });
+        restoreConditions();
         section("03", "검색 시작");
         start = new Button(this); start.setText("예약 조건 확인하고 시작"); start.setTextColor(Color.WHITE); start.setBackgroundTintList(android.content.res.ColorStateList.valueOf(GREEN));
         start.setOnClickListener(v -> confirm()); add(start, 12);
@@ -90,6 +117,17 @@ public final class MainActivity extends Activity {
             Intent launch = getPackageManager().getLaunchIntentForPackage("com.korail.talk");
             if (launch != null) startActivity(launch); else toast("코레일톡 앱을 설치한 뒤 예약내역을 확인해주세요.");
         }); add(pay, 8);
+        dismissReminder = new Button(this); dismissReminder.setText("결제·취소 확인했어요 · 재알림 끄기"); dismissReminder.setOnClickListener(v -> {
+            SearchAlerts.dismissPayment(this); toast("결제 재알림을 껐습니다. 실제 결제·취소는 코레일톡에서 확인해주세요.");
+        }); add(dismissReminder, 8);
+        Button alerts = new Button(this); alerts.setText("예약 결과 알림 설정"); alerts.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+            .putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName()).putExtra(Settings.EXTRA_CHANNEL_ID, "result"))); add(alerts, 8);
+        Button alarm = new Button(this); alarm.setText("결제 재알림 시간 설정"); alarm.setOnClickListener(v -> {
+            if (Build.VERSION.SDK_INT >= 31 && !getSystemService(AlarmManager.class).canScheduleExactAlarms()) {
+                startActivity(new Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, android.net.Uri.parse("package:" + getPackageName())));
+            } else toast("정확한 시간의 재알림을 사용할 수 있습니다. 알림 소리와 진동은 예약 결과 알림 설정에서 확인해주세요.");
+        }); add(alarm, 8);
+        add(text("예약 후 약 1분, 결제 기한 약 5분 전에 다시 알려드립니다. 결제 여부는 자동 확인하지 않으니 결제·취소 후 재알림을 꺼주세요. 알람 및 리마인더 권한이 없거나 절전·강제 종료 상태에서는 알림이 늦거나 오지 않을 수 있습니다.", 12, MUTED), 8);
         add(text("3~5초 무작위 대기 · 개인용 · 집 Wi-Fi 사용 권장\n한 번에 최대 5시간 45분 검색합니다. 안드로이드나 절전 설정에 의해 더 일찍 중단될 수 있습니다. 앱을 강제 종료하면 검색도 끝납니다.", 12, MUTED), 18);
         Button battery = new Button(this); battery.setText("휴대폰 배터리 최적화 설정 열기"); battery.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))); add(battery, 10);
         TextView about = text("비공식 개인용 앱 · 사용 라이브러리 및 이용 조건", 12, GREEN); about.setPadding(0, dp(18), 0, dp(12)); about.setOnClickListener(v -> about()); add(about, 0);
@@ -97,28 +135,39 @@ public final class MainActivity extends Activity {
 
     private void confirm() {
         if (SearchService.running) return;
-        if (username.getText().toString().trim().isEmpty() || password.getText().length() == 0 || departure.getText().toString().trim().isEmpty() || arrival.getText().toString().trim().isEmpty()) { toast("로그인 정보와 역 이름을 입력해주세요."); return; }
-        if (departure.getText().toString().trim().equals(arrival.getText().toString().trim())) { toast("출발역과 도착역을 다르게 입력해주세요."); return; }
-        ZonedDateTime end = ZonedDateTime.of(date, to, ZoneId.of("Asia/Seoul"));
-        if (!to.isAfter(from) || !end.isAfter(ZonedDateTime.now(ZoneId.of("Asia/Seoul")))) { toast("출발 시간 범위를 확인해주세요."); return; }
+        if (SearchAlerts.paymentPending(this)) { toast("이전 예약의 결제·취소를 확인한 뒤 재알림을 꺼주세요."); return; }
+        if (username.getText().toString().trim().isEmpty() || password.getText().length() == 0) { toast("로그인 정보를 입력해주세요."); return; }
+        JSONArray conditions;
+        StringBuilder summary = new StringBuilder();
+        try {
+            conditions = selectedConditions();
+            for (int i = 0; i < conditions.length(); i++) {
+                JSONObject condition = conditions.getJSONObject(i); checkCondition(condition);
+                summary.append(i + 1).append(". ").append(describeCondition(condition)).append("\n\n");
+            }
+        } catch (Exception error) { toast("현재 조건과 추가한 대안의 역·날짜·시간을 확인해주세요. 지난 조건은 수정하거나 삭제해주세요."); return; }
         if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 10);
             toast("예약 성공 알림을 위해 알림 권한을 허용한 뒤 다시 시작해주세요."); return;
         }
-        String summary = departure.getText() + " → " + arrival.getText() + "\n" + date + " · " + from + " ~ " + to + " 이전\nKTX · " + people.getSelectedItem() + " · " + seat.getSelectedItem();
+        NotificationManager notificationManager = getSystemService(NotificationManager.class);
+        if (!notificationManager.areNotificationsEnabled() || notificationManager.getNotificationChannel("result").getImportance() == NotificationManager.IMPORTANCE_NONE) {
+            toast("예약 결과 알림을 켠 뒤 검색을 시작해주세요.");
+            startActivity(new Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, getPackageName()).putExtra(Settings.EXTRA_CHANNEL_ID, "result"));
+            return;
+        }
         new AlertDialog.Builder(this).setTitle("이 조건으로 자동 예약할까요?")
-            .setMessage(summary + "\n\n좌석이 나오면 실제 예약을 시도합니다. 결제는 직접 해야 합니다. 개인용 이용에 한하며, 조회 간격을 줄일 수 없습니다.")
+            .setMessage(summary + "위 조건 중 먼저 예약되는 1건만 확보하고 모든 검색을 종료합니다. 결제는 직접 해야 합니다. 개인용 이용에 한하며, 조회 간격을 줄일 수 없습니다.")
             .setNegativeButton("돌아가기", null).setPositiveButton("확인하고 검색 시작", (dialog, which) -> begin()).show();
     }
 
     private void begin() {
         try {
             JSONObject config = new JSONObject().put("username", username.getText().toString().trim()).put("password", password.getText().toString())
-                .put("departure", departure.getText().toString().trim()).put("arrival", arrival.getText().toString().trim())
-                .put("date", date.format(DateTimeFormatter.BASIC_ISO_DATE)).put("start", from.format(DateTimeFormatter.ofPattern("HHmm")))
-                .put("end", to.format(DateTimeFormatter.ofPattern("HHmm"))).put("passengers", people.getSelectedItemPosition()+1)
-                .put("option", options[seat.getSelectedItemPosition()]).put("confirmed", true);
+                .put("conditions", selectedConditions()).put("confirmed", true);
             startForegroundService(new Intent(this, SearchService.class).putExtra("config", config.toString()));
+            getSharedPreferences("recent_search", 0).edit().putString("conditions", selectedConditions().toString()).apply();
+            recentNote.setText("이번 검색 조건을 기억했습니다. 다음 실행 때 자동으로 불러옵니다.");
             try {
                 credentialStore.save(username.getText().toString().trim(), password.getText().toString(), rememberId.isChecked(), rememberPassword.isChecked());
                 credentialNote.setText(rememberPassword.isChecked() ? "아이디와 비밀번호를 이 휴대폰에 암호화해 기억합니다." : rememberId.isChecked() ? "아이디만 기억합니다. 비밀번호는 저장하지 않습니다." : "로그인 정보를 기억하지 않습니다.");
@@ -202,7 +251,91 @@ public final class MainActivity extends Activity {
         int count = prefs.getInt("attempts", 0);
         attempts.setText(count == 0 ? "휴대폰 단독 실행 · PC 연결 불필요" : count + "회 조회 · 요청 사이 3~5초 무작위 대기");
         start.setEnabled(!active); stop.setEnabled(active);
+        dismissReminder.setEnabled(SearchAlerts.paymentPending(this));
         for (View input : inputs) input.setEnabled(!active);
+    }
+
+    private JSONObject currentCondition() throws Exception {
+        return new JSONObject().put("departure", departure.getText().toString().trim()).put("arrival", arrival.getText().toString().trim())
+            .put("date", date.format(DateTimeFormatter.BASIC_ISO_DATE)).put("start", from.format(DateTimeFormatter.ofPattern("HHmm")))
+            .put("end", to.format(DateTimeFormatter.ofPattern("HHmm"))).put("passengers", people.getSelectedItemPosition()+1)
+            .put("option", options[seat.getSelectedItemPosition()]);
+    }
+
+    private JSONArray selectedConditions() throws Exception {
+        JSONArray result = new JSONArray().put(currentCondition());
+        for (JSONObject other : alternatives) if (!sameCondition(result.getJSONObject(0), other)) result.put(other);
+        return result;
+    }
+
+    private boolean sameCondition(JSONObject first, JSONObject second) throws Exception {
+        for (String key : new String[]{"departure", "arrival", "date", "start", "end", "passengers", "option"})
+            if (!first.get(key).equals(second.get(key))) return false;
+        return true;
+    }
+
+    private void checkCondition(JSONObject value) throws Exception {
+        String dep = value.getString("departure"), arr = value.getString("arrival");
+        LocalDate day = LocalDate.parse(value.getString("date"), DateTimeFormatter.BASIC_ISO_DATE);
+        LocalTime begin = LocalTime.parse(value.getString("start"), DateTimeFormatter.ofPattern("HHmm"));
+        LocalTime end = LocalTime.parse(value.getString("end"), DateTimeFormatter.ofPattern("HHmm"));
+        if (dep.trim().isEmpty() || arr.trim().isEmpty() || dep.equals(arr) || !end.isAfter(begin)
+            || !ZonedDateTime.of(day, end, ZoneId.of("Asia/Seoul")).isAfter(ZonedDateTime.now(ZoneId.of("Asia/Seoul")))
+            || value.getInt("passengers") < 1 || value.getInt("passengers") > 6 || optionIndex(value.getString("option")) < 0)
+            throw new IllegalArgumentException();
+    }
+
+    private int optionIndex(String option) {
+        for (int i = 0; i < options.length; i++) if (options[i].equals(option)) return i;
+        return -1;
+    }
+
+    private String describeCondition(JSONObject value) throws Exception {
+        return value.getString("departure") + " → " + value.getString("arrival") + " · "
+            + LocalDate.parse(value.getString("date"), DateTimeFormatter.BASIC_ISO_DATE) + "\n"
+            + LocalTime.parse(value.getString("start"), DateTimeFormatter.ofPattern("HHmm")) + " ~ "
+            + LocalTime.parse(value.getString("end"), DateTimeFormatter.ofPattern("HHmm")) + " 이전 · 어른 "
+            + value.getInt("passengers") + "명 · " + seatLabels[optionIndex(value.getString("option"))];
+    }
+
+    private void renderAlternatives() {
+        for (View view : alternativeButtons) inputs.remove(view);
+        alternativeButtons.clear(); alternativeList.removeAllViews();
+        for (JSONObject value : alternatives) {
+            try {
+                TextView label = text("추가 대안 · " + describeCondition(value), 13, INK); alternativeList.addView(label);
+                Button remove = new Button(this); remove.setText("이 대안 삭제"); remove.setOnClickListener(v -> { alternatives.remove(value); renderAlternatives(); });
+                alternativeList.addView(remove); inputs.add(remove); alternativeButtons.add(remove);
+            } catch (Exception ignored) { }
+        }
+    }
+
+    private void restoreConditions() {
+        String stored = getSharedPreferences("recent_search", 0).getString("conditions", null);
+        if (stored == null) return;
+        try {
+            JSONArray saved = new JSONArray(stored);
+            if (saved.length() < 1 || saved.length() > 3) throw new IllegalArgumentException();
+            JSONObject first = saved.getJSONObject(0);
+            departure.setText(first.getString("departure")); arrival.setText(first.getString("arrival"));
+            date = LocalDate.parse(first.getString("date"), DateTimeFormatter.BASIC_ISO_DATE);
+            from = LocalTime.parse(first.getString("start"), DateTimeFormatter.ofPattern("HHmm"));
+            to = LocalTime.parse(first.getString("end"), DateTimeFormatter.ofPattern("HHmm"));
+            int count = first.getInt("passengers"), option = optionIndex(first.getString("option"));
+            if (count < 1 || count > 6 || option < 0) throw new IllegalArgumentException();
+            people.setSelection(count - 1); seat.setSelection(option); updateTimes();
+            for (int i = 1; i < saved.length(); i++) {
+                JSONObject value = saved.getJSONObject(i), clean = new JSONObject();
+                for (String key : new String[]{"departure", "arrival", "date", "start", "end", "passengers", "option"}) clean.put(key, value.get(key));
+                alternatives.add(clean);
+            }
+            renderAlternatives();
+            recentNote.setText("최근 검색 조건을 불러왔습니다. 날짜가 지났다면 수정하고, 지난 대안은 삭제해주세요.");
+        } catch (Exception error) {
+            alternatives.clear(); renderAlternatives();
+            getSharedPreferences("recent_search", 0).edit().clear().apply();
+            recentNote.setText("저장된 조건을 읽지 못했습니다. 조건을 다시 확인해주세요.");
+        }
     }
 
     private void about() {

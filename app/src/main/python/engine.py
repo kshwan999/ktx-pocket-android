@@ -34,6 +34,36 @@ def validate(config, now=None):
     return start, end
 
 
+def validated_conditions(config, now=None):
+    entries = config.get("conditions")
+    if entries is None:
+        start, end = validate(config, now)
+        return [(config, start, end)]
+    if not isinstance(entries, list) or not 1 <= len(entries) <= 3:
+        raise ValueError("검색 조건은 1~3개로 등록해주세요.")
+    plans = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError("검색 조건을 다시 확인해주세요.")
+        condition = {key: entry.get(key) for key in ("departure", "arrival", "date", "start", "end", "passengers", "option")}
+        condition.update(username=config.get("username"), password=config.get("password"), confirmed=config.get("confirmed"))
+        start, end = validate(condition, now)
+        plans.append((condition, start, end))
+    return plans
+
+
+def payment_deadline(reservation):
+    day = getattr(reservation, "buy_limit_date", "")
+    clock = getattr(reservation, "buy_limit_time", "")
+    if not isinstance(day, str) or not isinstance(clock, str): return 0
+    if len(day) != 8 or len(clock) not in (4, 6) or not (day + clock).isdigit(): return 0
+    try:
+        deadline = datetime.strptime(day + clock.ljust(6, "0"), "%Y%m%d%H%M%S").replace(tzinfo=KST)
+        return int(deadline.timestamp() * 1000)
+    except (ValueError, OverflowError):
+        return 0
+
+
 def matches(train, start, end, option):
     departure = departure_of(train)
     if not start <= departure < end:
@@ -93,6 +123,7 @@ def run(config_json, directory, listener):
     config = json.loads(config_json)
     attempts = 0
     client = None
+    plans = []
     deadline = time.monotonic() + MAX_SECONDS
 
     def status(kind, message):
@@ -107,7 +138,7 @@ def run(config_json, directory, listener):
             time.sleep(min(0.2, max(0, until - time.monotonic())))
 
     try:
-        start, end = validate(config)
+        plans = validated_conditions(config)
         from android_transport import install
         install()
         from pykorail import Korail, TrainType, AdultPassenger
@@ -122,17 +153,22 @@ def run(config_json, directory, listener):
         client.login(config["username"].strip(), config["password"])
         # A server notice may leave an apparently successful login unusable.
         client.reservations.all()
-        passengers = [AdultPassenger(config["passengers"])]
         failures = 0
+        turn = 0
         while not stopped():
             now = datetime.now(KST)
-            if now >= end:
-                status("stopped", "설정한 출발 시간 범위가 지나 검색을 마쳤습니다.")
+            available = [plan for plan in plans if now < plan[2]]
+            if not available:
+                status("stopped", "모든 조건의 출발 시간 범위가 지나 검색을 마쳤습니다.")
                 return
+            plan = available[turn % len(available)]
+            condition, start, end = plan
+            turn += 1
+            passengers = [AdultPassenger(condition["passengers"])]
             attempts += 1
-            status("searching", "조건에 맞는 좌석을 찾고 있습니다. 요청 사이에 3~5초 무작위로 대기합니다.")
+            status("searching", f"조건 {plans.index(plan) + 1}/{len(plans)} · {condition['departure']} → {condition['arrival']} 좌석을 찾고 있습니다. 요청 사이 3~5초 대기합니다.")
             try:
-                trains = search_window(client, config, max(start, now + timedelta(seconds=5)), end, passengers, stopped)
+                trains = search_window(client, condition, max(start, now + timedelta(seconds=5)), end, passengers, stopped)
                 failures = 0
             except NoResultsError:
                 pause(3)
@@ -166,17 +202,18 @@ def run(config_json, directory, listener):
                 continue
             for train in trains:
                 if stopped(): break
-                if not matches(train, max(start, datetime.now(KST)), end, config["option"]): continue
+                if not matches(train, max(start, datetime.now(KST)), end, condition["option"]): continue
                 status("reserving", "좌석을 발견해 예약 중입니다. 결과를 확인할 때까지 잠시 기다려주세요.")
                 try:
-                    reservation = client.reservations.create(train, passengers=passengers, option=config["option"])
+                    reservation = client.reservations.create(train, passengers=passengers, option=condition["option"])
                 except SoldOutError:
                     continue
                 except Exception:
                     # A timed-out reservation may already exist on the server: never blindly retry it.
                     status("uncertain", "예약 결과를 확정하지 못해 자동 시도를 멈췄습니다. 코레일 앱의 ‘예약내역’을 먼저 확인해주세요.")
                     return
-                status("success", str(reservation) + "\n\n코레일 앱에서 예약내역과 결제 기한을 확인하고 직접 결제해주세요.")
+                listener.onPaymentDeadline(payment_deadline(reservation))
+                status("success", str(reservation) + "\n\n예약 1건을 확보해 모든 조건의 검색을 마쳤습니다. 코레일 앱에서 결제 기한을 확인하고 직접 결제해주세요.")
                 return
             pause(3)
         status("stopped", "검색을 중지했습니다." if listener.isStopped() else "5시간 45분 실행 한도에 도달했습니다. 앱에서 다시 시작할 수 있습니다.")
@@ -196,6 +233,9 @@ def run(config_json, directory, listener):
     finally:
         config["password"] = ""
         config["username"] = ""
+        for condition, _, _ in plans:
+            condition["password"] = ""
+            condition["username"] = ""
         if client is not None:
             try: client.close()
             except Exception: pass

@@ -17,16 +17,21 @@ public final class SearchService extends Service {
     private Thread worker;
     private PowerManager.WakeLock wakeLock;
     private NotificationManager notifications;
+    private volatile long paymentDeadline;
+    private final Handler heartbeatHandler = new Handler(Looper.getMainLooper());
+    private final Runnable heartbeat = new Runnable() {
+        @Override public void run() {
+            if (running) { SearchAlerts.heartbeat(SearchService.this); heartbeatHandler.postDelayed(this, 30_000); }
+        }
+    };
 
     @Override public void onCreate() {
         super.onCreate();
         notifications = getSystemService(NotificationManager.class);
         NotificationChannel ongoing = new NotificationChannel("search", "검색 진행", NotificationManager.IMPORTANCE_LOW);
         ongoing.setDescription("휴대폰에서 진행 중인 KTX 검색과 중지 버튼");
-        NotificationChannel result = new NotificationChannel("result", "예약 결과", NotificationManager.IMPORTANCE_HIGH);
-        result.enableVibration(true);
         notifications.createNotificationChannel(ongoing);
-        notifications.createNotificationChannel(result);
+        SearchAlerts.createChannel(this);
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
@@ -46,6 +51,8 @@ public final class SearchService extends Service {
         if (Build.VERSION.SDK_INT >= 29) startForeground(ONGOING_ID, first, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
         else startForeground(ONGOING_ID, first);
         publish("login", "검색을 준비하고 있습니다.", 0);
+        SearchAlerts.startWatching(this);
+        heartbeatHandler.post(heartbeat);
         wakeLock = ((PowerManager)getSystemService(POWER_SERVICE)).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "KtxPocket:Search");
         wakeLock.acquire((5 * 3600L + 47 * 60L) * 1000L);
         worker = new Thread(() -> {
@@ -56,6 +63,8 @@ public final class SearchService extends Service {
                 // Python/Java exception text can include request data; never persist it.
                 publish("error", "앱 실행 중 오류가 발생했습니다. 통신·암호화 모듈이 이 휴대폰에서 동작하는지 확인이 필요합니다.", 0);
             } finally {
+                SearchAlerts.finishWatching(this);
+                heartbeatHandler.removeCallbacks(heartbeat);
                 running = false;
                 if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
                 stopForeground(STOP_FOREGROUND_REMOVE);
@@ -68,6 +77,7 @@ public final class SearchService extends Service {
 
     public final class Listener {
         public boolean isStopped() { return stopRequested; }
+        public void onPaymentDeadline(long deadline) { paymentDeadline = deadline; }
         public void onStatus(String kind, String message, int attempts) {
             if (!timedOut) publish(kind, message, attempts);
         }
@@ -78,7 +88,12 @@ public final class SearchService extends Service {
             .putInt("attempts", attempts).putLong("updated", System.currentTimeMillis()).apply();
         boolean active = kind.equals("login") || kind.equals("searching") || kind.equals("reserving") || kind.equals("stopping");
         if (active) notifications.notify(ONGOING_ID, notification("search", "KTX 자리찾기 · " + attempts + "회 조회", message, true));
-        else if (!kind.equals("stopped")) notifications.notify(101, notification("result", kind.equals("success") ? "KTX 예약 성공 · 결제가 필요합니다" : "KTX 검색 확인이 필요합니다", message, false));
+        else {
+            SearchAlerts.finishWatching(this);
+            if (kind.equals("success")) SearchAlerts.reserved(this, message, paymentDeadline);
+            else if (!kind.equals("stopped") || !stopRequested)
+                SearchAlerts.show(this, kind.equals("stopped") ? "KTX 검색을 마쳤습니다" : "KTX 검색 확인이 필요합니다", message, false);
+        }
     }
 
     private Notification notification(String channel, String title, String message, boolean ongoing) {
@@ -104,6 +119,7 @@ public final class SearchService extends Service {
 
     @Override public void onDestroy() {
         stopRequested = true;
+        heartbeatHandler.removeCallbacks(heartbeat);
         // Keep the UI from starting a second reservation while a previous request finishes.
         if (worker == null || !worker.isAlive()) running = false;
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();

@@ -71,6 +71,51 @@ class EngineTests(unittest.TestCase):
         client.reservations.create.assert_called_once()
         self.assertEqual(listener.onStatus.call_args.args[0], "uncertain")
 
+    def test_alternative_conditions_are_checked_in_turn_and_stop_after_one_reservation(self):
+        first = {key: self.config[key] for key in ("departure", "arrival", "date", "start", "end", "passengers", "option")}
+        second = {**first, "arrival": "동대구", "passengers": 2}
+        self.config["conditions"] = [first, second]
+        train = SimpleNamespace(dep_date="20991101", dep_time="170000", has_general_seat=lambda: True)
+        client, listener, _, _ = self.run_search_outcomes([[], [train]])
+        self.assertEqual([call.args[:2] for call in client.trains.search.call_args_list], [("서울", "부산"), ("서울", "동대구")])
+        client.reservations.create.assert_called_once()
+        self.assertEqual(client.reservations.create.call_args.kwargs["passengers"][0].count, 2)
+        self.assertEqual(listener.onStatus.call_args.args[0], "success")
+
+    def test_uncertain_reservation_does_not_try_another_alternative(self):
+        self.config["conditions"] = [dict(self.config), {**self.config, "arrival": "동대구"}]
+        client, listener = self.run_fake(OSError("simulated dropped connection"))
+        client.reservations.create.assert_called_once()
+        client.trains.search.assert_called_once()
+        self.assertEqual(listener.onStatus.call_args.args[0], "uncertain")
+
+    def test_alternative_validation_rejects_invalid_count_or_any_invalid_condition(self):
+        for conditions in ([], [dict(self.config)] * 4, [dict(self.config), {**self.config, "passengers": 7}], [None]):
+            with self.subTest(conditions=conditions), self.assertRaises(ValueError):
+                engine.validated_conditions({**self.config, "conditions": conditions}, self.now)
+
+    def test_expired_alternative_is_skipped_while_another_is_still_valid(self):
+        first = {**self.config, "end": "1700"}
+        second = {**self.config, "arrival": "동대구", "start": "1800", "end": "1900"}
+        self.config["conditions"] = [first, second]
+        train = SimpleNamespace(dep_date="20991101", dep_time="180500", has_general_seat=lambda: True)
+        initial = datetime(2099, 11, 1, 16, tzinfo=engine.KST)
+        later = datetime(2099, 11, 1, 17, 30, tzinfo=engine.KST)
+        with patch("engine.datetime", wraps=datetime) as dates:
+            dates.now.side_effect = [initial, initial, later, later]
+            client, listener, _, _ = self.run_search_outcomes([[train]])
+        client.trains.search.assert_called_once()
+        self.assertEqual(client.trains.search.call_args.args[:2], ("서울", "동대구"))
+        self.assertEqual(listener.onStatus.call_args.args[0], "success")
+
+    def test_payment_deadline_is_korean_time_and_unknown_deadline_is_not_invented(self):
+        expected = int(datetime(2099, 11, 1, 17, 30, tzinfo=engine.KST).timestamp() * 1000)
+        self.assertEqual(engine.payment_deadline(SimpleNamespace(buy_limit_date="20991101", buy_limit_time="173000")), expected)
+        self.assertEqual(engine.payment_deadline(SimpleNamespace(buy_limit_date="20991101", buy_limit_time="1730")), expected)
+        for day, clock in (("00000000", "235959"), ("20991131", "173000"), ("", ""), ("20991101", "999999")):
+            with self.subTest(day=day, clock=clock):
+                self.assertEqual(engine.payment_deadline(SimpleNamespace(buy_limit_date=day, buy_limit_time=clock)), 0)
+
     def test_access_restriction_stops_without_retry(self):
         from pykorail.exceptions import AccessRestrictedError, HttpStatusError
         for error in (AccessRestrictedError(403, "test restriction", "-8202"), HttpStatusError(403), HttpStatusError(429)):
